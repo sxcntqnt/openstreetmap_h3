@@ -1,22 +1,28 @@
 #!/bin/bash
-
 set -e
 
-# Perform all actions as $POSTGRES_USER
 export PGUSER="$POSTGRES_USER"
-echo "init OSM database"
-"${psql[@]}" <<- 'EOSQL'
-\i /input/static/database_init.sql
-EOSQL
 
-echo "parallel OSM data loading"
-#https://github.com/docker-library/postgres/blob/master/docker-entrypoint.sh
+echo "Initializing OSM database schema"
+/usr/local/bin/psql -v ON_ERROR_STOP=1 --dbname "osmworld" -f /input/static/database_init.sql
 
-find /input/sql/ | grep "/.*sql$" | sort | PGHOST= PGHOSTADDR=  parallel psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --no-password --no-psqlrc  --dbname "osmworld" -f
+echo "Parallel OSM schema loading"
+find /input/*/*/sql/ -type f -name "*.sql" | sort | parallel psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "osmworld" -f {}
 
-echo "finish OSM database initialization"
+echo "Parallel OSM data loading"
+for country_dir in /input/*/*_loc_ways; do
+    for category in nodes ways relations multipolygon; do
+        dir="$country_dir/$category"
+        table="osm_$category"
 
-"${psql[@]}" <<- 'EOSQL'
-\i /input/static/database_after_init.sql
-EOSQL
+        if [ -d "$dir" ]; then
+            echo "Importing $category data from $dir into $table"
+            find "$dir" -type f -name "*.tsv" | sort | parallel psql --username "$POSTGRES_USER" --dbname "osmworld" -c "\copy $table FROM '{}'"
+        fi
+    done
+done
 
+echo "Finalizing OSM database"
+/usr/local/bin/psql -v ON_ERROR_STOP=1 --dbname "osmworld" -f /input/static/database_after_init.sql
+
+echo "OSM database initialization complete!"
